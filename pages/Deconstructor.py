@@ -1,464 +1,291 @@
-import streamlit as st
-from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
-from langchain_community.document_loaders import PyMuPDFLoader, WebBaseLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.memory import ConversationBufferMemory
-from langchain.prompts import PromptTemplate
 import os
 import tempfile
-import shutil
 import time
 import requests
-from urllib.parse import urlparse
-import re
+import uuid
+from typing import List, Dict, Optional
+from datetime import datetime
 
-# 1. Optimized Models for Speed
-@st.cache_resource
-def initialize_models():
-    """Initialize LLM and embeddings optimized for speed."""
-    llm = ChatOllama(
-        model="tinyllama",    # Fastest model - only 637MB!
-        temperature=0.1,
-        num_ctx=1024,         # Reduced context for speed
-        top_p=0.9,
-        repeat_penalty=1.1,
-        # Speed optimizations
-        num_thread=8,         # multiple threads
-        num_predict=256,      # Limit response length for speed
-        stop=["Human:", "Assistant:", "\n\n"]  # Stop tokens
-    )
-    
-    # Fastest embedding model
-    embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2",
-        model_kwargs={'device': 'cpu'},
-        encode_kwargs={
-            'normalize_embeddings': False,  # Skiped normalization for speed
-            'batch_size': 32
-        }
-    )
-    return llm, embeddings
+import streamlit as st
+from groq import Groq
 
-# 2. URL validation and PDF detection
-def is_valid_pdf_url(url):
-    """Check if URL is valid and points to a PDF."""
-    try:
-        # Basic URL validation
-        parsed = urlparse(url)
-        if not all([parsed.scheme, parsed.netloc]):
-            return False, "Invalid URL format"
-        
-        # Check if URL ends with .pdf
-        if url.lower().endswith('.pdf'):
-            return True, "Direct PDF URL detected"
-        
-        # Check HTTP headers for PDF content
-        try:
-            response = requests.head(url, timeout=10, allow_redirects=True)
-            content_type = response.headers.get('content-type', '').lower()
-            
-            if 'application/pdf' in content_type:
-                return True, "PDF content detected"
-            elif 'text/html' in content_type:
-                return False, "HTML page detected - please provide direct PDF link"
-            else:
-                return False, f"Unknown content type: {content_type}"
-        except requests.RequestException:
-            # If head request fails, assume it might be a PDF and let WebBaseLoader handle it
-            return True, "URL validation skipped - will attempt to load"
-            
-    except Exception as e:
-        return False, f"URL validation error: {str(e)}"
+# LangChain
+from langchain_community.document_loaders import PyMuPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import Chroma
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
 
-# 3. Enhanced PDF processing with URL support
-def process_and_vectorize_pdf(pdf_source, source_type="file", persist_directory="faiss_db_deconstructor"):
-    """Lightning fast PDF processing with FAISS vector store - supports both files and URLs."""
-    
-    # Clear existing vector store directory
-    if os.path.exists(persist_directory):
-        shutil.rmtree(persist_directory)
-    
-    documents = []
-    
-    try:
-        if source_type == "file":
-            # PDF file processing
-            loader = PyMuPDFLoader(pdf_source)
-            documents = loader.load()
-        
-        elif source_type == "url":
-            # URL processing with WebBaseLoader
-            st.info("Loading PDF from URL...")
-            
-            # First validate URL
-            is_valid, message = is_valid_pdf_url(pdf_source)
-            if not is_valid:
-                st.error(f"❌ {message}")
-                return None
-            
-            # Configure WebBaseLoader for PDF
-            loader = WebBaseLoader(
-                web_paths=[pdf_source],
-                header_template={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                },
-                requests_kwargs={'timeout': 30}
-            )
-            
-            documents = loader.load()
-            
-            # Additional processing for web-loaded content
-            if documents:
-                for doc in documents:
-                    # Clean up common web artifacts
-                    doc.page_content = re.sub(r'<[^>]+>', '', doc.page_content)  # Remove HTML tags
-                    doc.page_content = re.sub(r'\s+', ' ', doc.page_content)    # Normalize whitespace
-                    doc.page_content = doc.page_content.strip()
-        
-        if not documents:
-            st.error("Could not extract text from the PDF. Please ensure it's a valid PDF file/URL.")
-            return None
-        
-        # Filter out empty documents
-        documents = [doc for doc in documents if doc.page_content.strip()]
-        
-        if not documents:
-            st.error("No text content found in the PDF.")
-            return None
-        
-        # Aggressive text splitting for speed
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=400,    # Smaller chunks for faster processing
-            chunk_overlap=40,  # Minimal overlap for speed
-            separators=["\n\n", "\n", ". "],
-            length_function=len,
-        )
-        
-        splits = text_splitter.split_documents(documents)
-        
-        splits = [split for split in splits if len(split.page_content.strip()) > 30]
-        
-        # Limit to first 150 chunks for maximum speed
-        if len(splits) > 150:
-            splits = splits[:150]
-            st.info(f"Processing first 150 chunks out of {len(splits)} total for optimal speed")
-        
-        if not splits:
-            st.error("No meaningful text chunks could be created from the PDF.")
-            return None
-        
-        _, embeddings = initialize_models()
-        
-        # Used FAISS instead of Chroma - much faster!
-        vectorstore = FAISS.from_documents(
-            documents=splits, 
-            embedding=embeddings
-        )
-        
-        # Save FAISS index for persistence (optional)
-        try:
-            os.makedirs(persist_directory, exist_ok=True)
-            vectorstore.save_local(persist_directory)
-        except:
-            pass  # Skip saving if there's an issue
-        
-        st.success(f"Processing complete! Created {len(splits)} chunks.")
-        return vectorstore
-        
-    except Exception as e:
-        st.error(f"❌ Error processing PDF: {str(e)}")
+# DB
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, create_engine, JSON
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+# PDF fallback
+import PyPDF2
+
+# ---------------------------
+# Config
+# ---------------------------
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_persist")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./deconstructor_sessions.db")
+
+# ---------------------------
+# Groq Client
+# ---------------------------
+def initialize_groq_client():
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
         return None
+    return Groq(api_key=api_key)
 
-# 4. Simplified, fast prompt template
-def create_custom_prompt():
-    """Create a fast, concise prompt template."""
-    
-    custom_prompt = PromptTemplate(
-        template="""Use this research paper context to answer the question briefly and accurately:
+def call_groq_llm(prompt, max_tokens=1500):
+    client = initialize_groq_client()
+    if not client:
+        return "Error: Groq API key missing."
+    try:
+        resp = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"Error generating response: {e}"
 
-Context: {context}
+# ---------------------------
+# DB Models
+# ---------------------------
+Base = declarative_base()
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+DBSession = sessionmaker(bind=engine)
 
-Chat History: {chat_history}
+class SessionRecord(Base):
+    __tablename__ = "sessions"
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_active = Column(DateTime, default=datetime.utcnow)
+    messages = relationship("MessageRecord", back_populates="session", cascade="all, delete-orphan")
+    documents = relationship("DocumentRecord", back_populates="session", cascade="all, delete-orphan")
 
-Question: {question}
+class MessageRecord(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, ForeignKey("sessions.id"), index=True)
+    role = Column(String)
+    content = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    session = relationship("SessionRecord", back_populates="messages")
 
-Answer (be specific and concise):""",
-        input_variables=["context", "chat_history", "question"]
+class DocumentRecord(Base):
+    __tablename__ = "documents"
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey("sessions.id"), index=True)
+    filename = Column(String)
+    source = Column(String)
+    doc_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    session = relationship("SessionRecord", back_populates="documents")
+
+Base.metadata.create_all(bind=engine)
+
+# ---------------------------
+# Embeddings + Chroma
+# ---------------------------
+@st.cache_resource
+def initialize_embedding_model():
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL_NAME,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
     )
-    
-    return custom_prompt
 
-# 5. Speed-optimized conversation chain
-def create_conversation_chain(vectorstore):
-    """Create a lightning-fast conversational chain."""
-    
-    llm, _ = initialize_models()
-    
-    # Fast retriever - fewer documents, similarity search
-    retriever = vectorstore.as_retriever(
-        search_type="similarity",  # Much faster than MMR
-        search_kwargs={
-            "k": 3,  # Fewer chunks for speed
-        }
+@st.cache_resource
+def init_chroma():
+    return Chroma(
+        collection_name="deconstructor_collection",
+        persist_directory=CHROMA_PERSIST_DIR,
+        embedding_function=initialize_embedding_model()
     )
-    
-    # Lightweight memory with limits
-    memory = ConversationBufferMemory(
-        memory_key='chat_history',
-        return_messages=True,
-        output_key='answer',
-        max_token_limit=500  # Limit memory for speed
-    )
-    
-    # Create optimized chain
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        return_source_documents=False,  # Skip source docs for speed
-        verbose=False,  # Turn off verbose logging
-        combine_docs_chain_kwargs={"prompt": create_custom_prompt()}
-    )
-    
-    return qa_chain
 
-st.set_page_config(
-    page_title="Research Paper Deconstructor", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ---------------------------
+# PDF Utils
+# ---------------------------
+def pdf_to_text(path: str) -> str:
+    try:
+        loader = PyMuPDFLoader(path)
+        docs = loader.load()
+        combined = "\n\n".join([d.page_content for d in docs if d.page_content])
+        if combined.strip():
+            return combined
+    except Exception:
+        pass
+    try:
+        reader = PyPDF2.PdfReader(open(path, "rb"))
+        return "\n\n".join([p.extract_text() or "" for p in reader.pages])
+    except Exception:
+        return ""
 
+# ---------------------------
+# Ingest
+# ---------------------------
+def ingest_documents(chroma, session_id: str, files: List[Dict]):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    texts, metas, ids = [], [], []
+    db = DBSession()
+    for f in files:
+        doc_id = str(uuid.uuid4())
+        text = pdf_to_text(f["path"])
+        if not text.strip():
+            continue
+        chunks = splitter.split_text(text)
+        for i, c in enumerate(chunks):
+            texts.append(c)
+            metas.append({"session_id": session_id, "doc_id": doc_id, "filename": f["filename"], "source": f["source"]})
+            ids.append(f"{doc_id}_{i}")
+        db.add(DocumentRecord(id=doc_id, session_id=session_id, filename=f["filename"], source=f["source"]))
+    db.commit(); db.close()
+    if texts:
+        chroma.add_texts(texts=texts, metadatas=metas, ids=ids)
+        chroma.persist()
+
+# ---------------------------
+# Session helpers
+# ---------------------------
+def create_session(name="Untitled Chat"):
+    db = DBSession()
+    sid = str(uuid.uuid4())
+    db.add(SessionRecord(id=sid, name=name))
+    db.commit(); db.close()
+    return sid
+
+def rename_session(sid, new):
+    db = DBSession(); s = db.query(SessionRecord).get(sid)
+    if s: s.name = new; db.commit()
+    db.close()
+
+def delete_session(sid):
+    db = DBSession(); s = db.query(SessionRecord).get(sid)
+    if s: db.delete(s); db.commit()
+    db.close()
+
+def save_message(sid, role, content):
+    db = DBSession()
+    db.add(MessageRecord(session_id=sid, role=role, content=content))
+    sess = db.query(SessionRecord).get(sid)
+    if sess: sess.last_active = datetime.utcnow()
+    db.commit(); db.close()
+
+def load_messages(sid):
+    db = DBSession()
+    msgs = db.query(MessageRecord).filter_by(session_id=sid).order_by(MessageRecord.created_at).all()
+    db.close()
+    return [{"role": m.role, "content": m.content} for m in msgs]
+
+def rehydrate_memory(sid):
+    mem = ConversationBufferMemory(memory_key="chat_history", input_key="question", return_messages=True)
+    for m in load_messages(sid):
+        if m["role"] in ["human", "user"]: mem.chat_memory.add_user_message(m["content"])
+        elif m["role"] in ["ai", "assistant"]: mem.chat_memory.add_ai_message(m["content"])
+    return mem
+
+# ---------------------------
+# RAG
+# ---------------------------
+def retrieve_docs(chroma, sid, q, k=5):
+    docs = chroma.as_retriever(search_kwargs={"k": k}).get_relevant_documents(q)
+    return [d for d in docs if d.metadata.get("session_id") == sid]
+
+def ask_question(chroma, sid, mem, q):
+    save_message(sid, "human", q); mem.chat_memory.add_user_message(q)
+    ctx = "\n\n".join(d.page_content for d in retrieve_docs(chroma, sid, q))
+    hist = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}" for m in mem.chat_memory.messages[:-1]])
+    ans = call_groq_llm(f"Context:\n{ctx}\n\nHistory:\n{hist}\n\nQ: {q}\nA:")
+    save_message(sid, "ai", ans); mem.chat_memory.add_ai_message(ans)
+    return ans
+
+# ---------------------------
+# UI
+# ---------------------------
+st.set_page_config(page_title="Research Paper Deconstructor", layout="wide")
 st.title("Research Paper Deconstructor")
-st.markdown("*Powered by TinyLlama - Open Source RAG*")
 
-# Initialize session state
-if "conversation_chain" not in st.session_state:
-    st.session_state.conversation_chain = None
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-if "pdf_processed" not in st.session_state:
-    st.session_state.pdf_processed = False
-if "current_source" not in st.session_state:
-    st.session_state.current_source = None
+chroma = init_chroma()
+if "sid" not in st.session_state: st.session_state.sid = None
+if "mem" not in st.session_state: st.session_state.mem = None
+if "menu_open" not in st.session_state: st.session_state.menu_open = None
 
-# Enhanced Sidebar
+# LEFT SIDEBAR
 with st.sidebar:
-    st.header("Upload Research Paper")
-    st.markdown("Upload a PDF file or provide a direct PDF URL")
-    
-    # Input method selection
-    input_method = st.radio(
-        "Choose input method:",
-        ["Upload PDF File", "PDF URL"],
-        horizontal=True
-    )
-    
-    uploaded_file = None
-    pdf_url = None
-    
-    if input_method == "Upload PDF File":
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file", 
-            type="pdf",
-            help="Upload academic papers, research documents, or technical reports"
-        )
-        
-        if uploaded_file is not None:
-            st.info(f"**File:** {uploaded_file.name}")
-            st.info(f"**Size:** {uploaded_file.size / 1024:.1f} KB")
-    
-    else:  # PDF URL
-        pdf_url = st.text_input(
-            "Enter direct PDF URL:",
-            placeholder="https://example.com/paper.pdf",
-            help="Provide a direct link to a PDF file (must end with .pdf or serve PDF content)"
-        )
-        
-        if pdf_url:
-            st.info(f"**URL:** {pdf_url}")
-            
-            # Real-time URL validation
-            is_valid, message = is_valid_pdf_url(pdf_url)
-            if is_valid:
-                st.success(f"{message}")
-            else:
-                st.warning(f"⚠️ {message}")
-    
-    process_button = st.button("Process PDF", type="primary")
-    
-    if process_button:
-        if input_method == "Upload PDF File" and uploaded_file is not None:
-            with st.spinner("Processing PDF file... This may take a few moments."):
-                # Create temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    temp_file_path = tmp_file.name
-                
-                try:
-                    # Process the PDF file
-                    vector_store = process_and_vectorize_pdf(temp_file_path, source_type="file")
-                    
-                    if vector_store is not None:
-                        st.session_state.vector_store = vector_store
-                        st.session_state.conversation_chain = create_conversation_chain(vector_store)
-                        st.session_state.pdf_processed = True
-                        st.session_state.current_source = uploaded_file.name
-                        st.session_state.chat_history = []  # Reset chat history
-                        st.rerun()
-                
-                except Exception as e:
-                    st.error(f"Error processing PDF: {str(e)}")
-                
-                finally:
-                    # Clean up temporary file
-                    if os.path.exists(temp_file_path):
-                        os.unlink(temp_file_path)
-        
-        elif input_method == "PDF URL" and pdf_url:
-            with st.spinner("Processing PDF from URL... This may take a few moments."):
-                try:
-                    # Process the PDF URL
-                    vector_store = process_and_vectorize_pdf(pdf_url, source_type="url")
-                    
-                    if vector_store is not None:
-                        st.session_state.vector_store = vector_store
-                        st.session_state.conversation_chain = create_conversation_chain(vector_store)
-                        st.session_state.pdf_processed = True
-                        st.session_state.current_source = pdf_url
-                        st.session_state.chat_history = []  # Reset chat history
-                        st.rerun()
-                
-                except Exception as e:
-                    st.error(f"Error processing PDF from URL: {str(e)}")
-        
-        else:
-            st.warning("⚠️ Please provide a PDF file or valid PDF URL first.")
-    
-    # Display current source
-    if st.session_state.pdf_processed and st.session_state.current_source:
-        st.divider()
-        st.markdown("**Current Source:**")
-        if st.session_state.current_source.startswith("http"):
-            st.markdown(f"URL: {st.session_state.current_source}")
-        else:
-            st.markdown(f"File: {st.session_state.current_source}")
-    
-    # Add helpful tips
-    with st.expander("Lightning Fast Results"):
-        st.markdown("""
-        **Expected Performance:**
-        - PDF File Processing: 5-15 seconds
-        - PDF URL Processing: 10-30 seconds
-        - Question Response: 1-3 seconds
-        
-        **Supported PDF Sources:**
-        - Local PDF files
-        - Direct PDF URLs (ending with .pdf)
-        - URLs serving PDF content
-        
-        **For Best Results:**
-        - Use direct PDF links (not webpage links)
-        - Ensure PDFs are text-based (not scanned images)
-        - Ask specific, direct questions
-        - Academic papers work best
-        
-        **Example PDF URLs:**
-        - ArXiv: https://arxiv.org/pdf/xxxx.xxxx.pdf
-        - Research Gate: Direct PDF links
-        - University repositories: Direct PDF links
-        """)
+    st.subheader("Configuration")
+    api_key_input = st.text_input("Groq API Key", type="password")
+    if api_key_input: 
+        os.environ["GROQ_API_KEY"] = api_key_input
+        st.success("✅ API key configured")
 
-# Main Chat Interface
-col1, col2 = st.columns([3, 1])
+    st.subheader("Chats")
+    if st.button("New Chat", use_container_width=True):
+        st.session_state.sid = create_session()
+        st.session_state.mem = rehydrate_memory(st.session_state.sid)
+        st.session_state.menu_open = None
+        st.rerun()
 
-with col1:
-    st.header("Chat with Your Document")
+    db = DBSession(); sessions = db.query(SessionRecord).order_by(SessionRecord.last_active.desc()).all(); db.close()
+    for s in sessions:
+        cols = st.columns([0.2, 4])
+        with cols[0]:
+            if st.button("⋮", key=f"menu_{s.id}"):
+                st.session_state.menu_open = s.id if st.session_state.menu_open != s.id else None
+                st.rerun()
+        with cols[1]:
+            if st.button(s.name or "Untitled", key=f"sel_{s.id}", use_container_width=True):
+                st.session_state.sid = s.id
+                st.session_state.mem = rehydrate_memory(s.id)
+                st.session_state.menu_open = None
+                st.rerun()
+        if st.session_state.menu_open == s.id:
+            action = st.radio("Action", ["Rename", "Delete"], key=f"act_{s.id}")
+            if action == "Rename":
+                new_name = st.text_input("New name:", value=s.name or "", key=f"ren_{s.id}")
+                if st.button("Save", key=f"save_{s.id}"):
+                    rename_session(s.id, new_name)
+                    st.session_state.menu_open = None
+                    st.rerun()
+            elif action == "Delete":
+                if st.button("Confirm Delete", key=f"del_{s.id}"):
+                    delete_session(s.id)
+                    if st.session_state.sid == s.id: st.session_state.sid = None; st.session_state.mem = None
+                    st.session_state.menu_open = None
+                    st.rerun()
 
-with col2:
-    if st.session_state.pdf_processed:
-        st.success("Document is Ready")
-    else:
-        st.warning("No PDF Processed")
-
-if not st.session_state.pdf_processed:
-    st.info("Please upload a PDF file or provide a PDF URL using the sidebar to begin chatting with your document.")
-    
-    # Sample questions
-    st.subheader("Example Questions You Can Ask:")
-    example_questions = [
-        "What is the main research question or hypothesis?",
-        "What methodology was used in this study?",
-        "What are the key findings and results?",
-        "What are the limitations mentioned by the authors?",
-        "How does this work compare to previous research?",
-        "What future work do the authors suggest?"
-    ]
-    
-    for i, question in enumerate(example_questions, 1):
-        st.markdown(f"**{i}.** {question}")
-
+# MAIN + RIGHT
+if not st.session_state.sid:
+    st.info("Start a new chat or select one.")
 else:
-    # Display chat messages
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Chat input
-    if prompt := st.chat_input("Ask a question about the research paper..."):
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # Generate response with speed optimizations and timing
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            
-            try:
-                # Show immediate feedback with timer
-                start_time = time.time()
-                message_placeholder.markdown("Generating response...")
-                
-                # Fast response generation
-                response = st.session_state.conversation_chain({"question": prompt})
-                bot_response = response['answer']
-                
-                # Calculate response time
-                end_time = time.time()
-                response_time = end_time - start_time
-                
-                # Display response with timing
-                final_response = f"{bot_response}\n\n*Response time: {response_time:.1f}s*"
-                message_placeholder.markdown(final_response)
-                
-                # Add to chat history
-                st.session_state.chat_history.append({
-                    "role": "assistant", 
-                    "content": final_response
-                })
-                
-            except Exception as e:
-                message_placeholder.error(f"❌ Error: {str(e)}")
-                st.info("Try a simpler question or check if TinyLlama is properly installed.")
+    left, right = st.columns([3,1])
 
-# Clear chat button
-if st.session_state.pdf_processed:
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("Clear Chat History"):
-            st.session_state.chat_history = []
-            st.rerun()
-    
-    with col2:
-        if st.button("Reset PDF"):
-            st.session_state.conversation_chain = None
-            st.session_state.chat_history = []
-            st.session_state.vector_store = None
-            st.session_state.pdf_processed = False
-            st.session_state.current_source = None
-            st.rerun()
+    with left:
+        for m in load_messages(st.session_state.sid):
+            with st.chat_message("user" if m["role"]=="human" else "assistant"): st.markdown(m["content"])
+        if q := st.chat_input("Ask about your documents"):
+            with st.chat_message("user"): st.markdown(q)
+            with st.chat_message("assistant"): st.markdown(ask_question(chroma, st.session_state.sid, st.session_state.mem, q))
+
+    with right:
+        st.subheader("Attached PDFs")
+        db = DBSession(); docs = db.query(DocumentRecord).filter_by(session_id=st.session_state.sid).all(); db.close()
+        for d in docs: st.text(d.filename)
+        st.subheader("Browse & Process")
+        files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True, key="up")
+        if st.button("Process", key="proc"):
+            if files:
+                to_ingest = []
+                for f in files:
+                    path = os.path.join(tempfile.gettempdir(), f.name)
+                    with open(path,"wb") as out: out.write(f.getvalue())
+                    to_ingest.append({"path": path, "filename": f.name, "source": "upload"})
+                ingest_documents(chroma, st.session_state.sid, to_ingest)
+                st.success("✅ Files processed"); st.rerun()

@@ -13,3 +13,8 @@ beautifulsoup4
 reportlab
 groq
 langchain_groq
+chromadb
+sqlalchemy
+psycopg2-binary 
+PyMuPDF
+PyPDF2
