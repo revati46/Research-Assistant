@@ -9,15 +9,15 @@ This project is a comprehensive, dual-function application designed to accelerat
 2.  **The Deconstructor**: Provides a fast, interactive chat interface to "deconstruct" any existing research paper. Users can upload a PDF or provide a URL to start a conversation, asking complex questions and receiving instant, context-aware answers from a locally-run LLM.
 
 Tech Stack
-Frontend: Streamlit
-LLM Orchestration: LangChain
-Cloud LLM Service: Groq (Llama-3.1-8B-Instant, Llama-3.3-70B-Versatile)
-Vector Databases: Constructor - FAISS , Deconstructor - ChromaDB
-Database: SQLite/Postgres (for session & chat history)
-Embeddings: Hugging Face Sentence Transformers (all-MiniLM-L6-v2)
-PDF Generation: ReportLab
-PDF Parsing: PyMuPDF, PyPDF2
-API/Web Interaction: requests
+1. Frontend: Streamlit
+2. LLM Orchestration: LangChain
+3. Cloud LLM Service: Groq (Llama-3.1-8B-Instant, Llama-3.3-70B-Versatile)
+4. Vector Databases: Constructor - FAISS , Deconstructor - ChromaDB
+5. Database: SQLite/Postgres (for session & chat history)
+6. Embeddings: Hugging Face Sentence Transformers (all-MiniLM-L6-v2)
+7. PDF Generation: ReportLab
+8. PDF Parsing: PyMuPDF, PyPDF2
+9. API/Web Interaction: requests
 
 Setup and Installation 
 1. Clone the repository
