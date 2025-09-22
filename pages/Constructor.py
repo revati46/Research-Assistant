@@ -1,11 +1,3 @@
-# Deconstructor.py (patched Constructor backend)
-# Note: This file is the updated Constructor.py you provided, enhanced for:
-# - model switching (llama-3.1-8b-instant for repo analysis, llama-3.3-70b-versatile for drafting)
-# - parallel GitHub scraping (download files concurrently)
-# - caching FAISS vector store per repository
-# - keep FAISS as vector DB (fast) as requested
-# All UI code left functionally unchanged.
-
 import streamlit as st
 from groq import Groq
 import os
@@ -308,7 +300,7 @@ def get_github_repo_data(repo_url):
         except Exception:
             commits = []
 
-        st.info("Fetching repository files (parallelized)... This may take a moment.")
+        st.info("Fetching repository files... This may take a moment.")
         files_content = get_file_content(owner, repo)
 
         # repo structure
@@ -984,7 +976,7 @@ with st.sidebar:
     
     author_name = st.text_input(
         "Author Name(s)",
-        placeholder="John Doe, Jane Smith",
+        placeholder="Your name",
         help="Enter author names (comma-separated for multiple authors)"
     )
     
@@ -1044,7 +1036,7 @@ elif not (github_url and author_name and institution):
     
     with col3:
         st.markdown("### Powered by Groq")
-        st.write("- Llama3-70B model")
+        st.write("- llama-3.1-8b-instant, llama-3.3-70b-versatile")
         st.write("- High-quality content")
         st.write("- Fast generation")
         st.write("- Advanced reasoning")
@@ -1114,7 +1106,7 @@ elif generate_button:
         
             # Step 3: Generate paper content (95%)
             if st.session_state.analysis and st.session_state.vector_db:
-                status_text.text("Generating IEEE paper content with RAG...")
+                status_text.text("Generating IEEE paper content...")
                 progress_bar.progress(80)
                 
                 paper_sections = generate_ieee_paper_content(
@@ -1348,7 +1340,7 @@ if st.session_state.repo_data:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9rem;'>
-    <p>🤖 Powered by <strong>Groq Llama3-70B</strong> | 📄 IEEE Format Compliant | 🚀 Advanced Repository Analysis</p>
+    <p> Powered by <strong>Groq lllama-3.3-70b-versatile</strong> | IEEE Format Compliant | Advanced Repository Analysis</p>
     <p>Transform any GitHub repository into a professional research paper in minutes!</p>
 </div>
 """, unsafe_allow_html=True)
