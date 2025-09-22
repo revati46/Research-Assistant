@@ -1,4 +1,4 @@
-# ResearchPaper-Constructor-Deconstructor
+# ResearchPaper-Assistant
 
 **An AI-powered research assistant that constructs IEEE-formatted papers from GitHub repositories and deconstructs existing papers for interactive Q&A.**
 
