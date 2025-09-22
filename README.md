@@ -11,12 +11,12 @@ This project is a comprehensive, dual-function application designed to accelerat
 Tech Stack
 Frontend: Streamlit
 LLM Orchestration: LangChain
-Cloud LLM Service (Constructor): Groq (Llama3-70B)
-Local LLM Service (Deconstructor): Ollama (TinyLlama)
-Vector Database: FAISS (from langchain-community)
+Cloud LLM Service: Groq (Llama-3.1-8B-Instant, Llama-3.3-70B-Versatile)
+Vector Databases: Constructor - FAISS , Deconstructor - ChromaDB
+Database: SQLite/Postgres (for session & chat history)
 Embeddings: Hugging Face Sentence Transformers (all-MiniLM-L6-v2)
 PDF Generation: ReportLab
-PDF Parsing: PyMuPDF
+PDF Parsing: PyMuPDF, PyPDF2
 API/Web Interaction: requests
 
 Setup and Installation 
